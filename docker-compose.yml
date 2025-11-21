@@ -1,0 +1,130 @@
+services:
+  # Redis
+  redis:
+    image: redis:alpine
+    container_name: gemeo-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - gemeo-network
+
+  # Simulador
+  simulator:
+    build:
+      context: ./docker-images/simulator
+      dockerfile: Dockerfile
+    container_name: gemeo-simulator
+    restart: unless-stopped
+    ports:
+      - "5001:5001"
+    environment:
+      - REDIS_URL=redis://redis:6379
+    volumes:
+      - app_data:/app/data
+      - sim_logs:/app/logs
+    depends_on:
+      - redis
+    networks:
+      - gemeo-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # API
+  api:
+    build:
+      context: ./docker-images/api
+      dockerfile: Dockerfile
+    container_name: gemeo-api
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      - SIMULATOR_URL=http://simulator:5001
+      - REDIS_URL=redis://redis:6379
+      - FLASK_ENV=production
+    volumes:
+      - app_data:/app/data
+      - api_logs:/app/logs
+      - api_models:/app/models
+    depends_on:
+      - redis
+      - simulator
+    networks:
+      - gemeo-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Prometheus
+  prometheus:
+    build:
+      context: ./docker-images/prometheus
+      dockerfile: Dockerfile
+    container_name: gemeo-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+    networks:
+      - gemeo-network
+
+  # Grafana
+  grafana:
+    image: grafana/grafana:latest
+    container_name: gemeo-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=gemeodigital123
+      - GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s:%(http_port)s/grafana
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - gemeo-network
+
+  # Nginx
+  nginx:
+    build:
+      context: .
+      dockerfile: ./docker-images/web/Dockerfile
+    container_name: gemeo-nginx
+    restart: unless-stopped
+    ports:
+      - "5385:80"  # <-- SUA PORTA WEB CORRETA
+    depends_on:
+      - api
+      - grafana
+    networks:
+      - gemeo-network
+
+volumes:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+  app_data:
+  sim_logs:
+  api_logs:
+  api_models:
+
+networks:
+  gemeo-network:
+    driver: bridge
